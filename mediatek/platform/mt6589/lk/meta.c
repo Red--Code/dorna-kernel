@@ -93,6 +93,8 @@ BOOL meta_check_key_trigger(void)
     printf("\nMETA Check meta boot\n");
     printf("%META Wait 50ms for special keys\n");
 
+    return FALSE;
+
     while(get_timer(begin)<50)
     {
         if(mtk_detect_key(MT65XX_META_KEY))

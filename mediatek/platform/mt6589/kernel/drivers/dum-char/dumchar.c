@@ -255,18 +255,30 @@ int init_pmt(void)
         //and valid mirror last download or first download 
        printk("can not find pmt,use default part info\n");
     } else {
-        printk("find pt\n");
-       for (i = 0; i < PART_MAX_COUNT; i++) {  
-	   		if((lastest_part[i].name[0] == 0x00)||(lastest_part[i].name[0] == 0xff))
+		printk("find pt\n");
+		for (i = 0; i < PART_MAX_COUNT; i++)
+		{  
+			if((lastest_part[i].name[0] == 0x00)||(lastest_part[i].name[0] == 0xff))
+			break;
+			
+#ifdef MTK_SHARED_SDCARD
+			if(!strcmp(lastest_part[i].name,"__NODL_FAT"))
+			{
+				printk("========  for ota, no fat partition, omit it========\n");
+				printk("part %s size %llx %llx\n", lastest_part[i+1].name, lastest_part[i+1].offset, lastest_part[i+1].size);
+				PartInfo[i].start_address = lastest_part[i+1].offset;
+				PartInfo[i].size= lastest_part[i+1].size;
 				break;
-            printk("part %s size %llx %llx\n", lastest_part[i].name, 
-                lastest_part[i].offset, lastest_part[i].size);
+			}
+#endif
+
+			printk("part %s size %llx %llx\n", lastest_part[i].name, lastest_part[i].offset, lastest_part[i].size);
 			PartInfo[i].start_address = lastest_part[i].offset;
 			PartInfo[i].size= lastest_part[i].size;
-		/*	if(lastest_part[i].size == 0)
-				break;*/
-        }
-	   printk("find pt %d\n",i);
+			/*	if(lastest_part[i].size == 0)
+			break;*/
+		}
+		printk("find pt %d\n",i);
     }
 	pmt_done = 1;
 	ret = 0;
@@ -1400,7 +1412,7 @@ static long dumchar_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
 			}
 
 			set_fs(curr_fs);
-			
+			kfree(ebuf);
 			break;
 		case MEMERASE64:
 			break;
@@ -1560,6 +1572,7 @@ int dumchar_open (struct inode *inode, struct file *filp)
 			printk("[dumchar_open] show_stack*************************************\n");
 			show_stack(NULL,NULL);
 			fo->act_filp = (struct file *)0xffffffff;
+			kfree(fo);
 			return -EINVAL;
 			
 	}else{
@@ -1588,6 +1601,7 @@ open_fail1:
 	filp_close(fo->act_filp, NULL);
 open_fail2:
 	fo->act_filp = NULL;
+kfree(fo);
 	return result;	
 }
 
@@ -1673,6 +1687,7 @@ int dumchar_release (struct inode *inode, struct file *filp)
 	}else{
 		filp_close(fo->act_filp,NULL);
 	}
+kfree(fo);
 	return 0;
 }
 

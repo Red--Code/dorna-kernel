@@ -103,7 +103,7 @@ void   mt_disp_power(BOOL on);
 void   mt_disp_update(UINT32 x, UINT32 y, UINT32 width, UINT32 height);
 void   mt_disp_wait_idle(void);
 UINT32 mt_disp_get_lcd_time(void);
-
+UINT32 mt_disp_get_lcd_type(void);
 BOOL DISP_DetectDevice(void);
 
 // -- Utility Functions for Customization --

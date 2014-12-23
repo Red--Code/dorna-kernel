@@ -79,8 +79,13 @@ extern void fgauge_precharge_init(void);
 extern void fgauge_precharge_uninit(void);
 extern kal_int32 fgauge_precharge_compensated_voltage(kal_int32 recursion_time);
 
-int Enable_BATDRV_LOG = 0;
-//int Enable_BATDRV_LOG = 1;
+//int Enable_BATDRV_LOG = 0;
+int Enable_BATDRV_LOG = 1;
+
+#ifdef MTK_KERNEL_POWER_OFF_CHARGING
+//#define KPOC_SLEEP_TIME 60
+#endif
+//int g_hrtimer_sleep_time = 10;//10s
 
 ///////////////////////////////////////////////////////////////////////////////////////////
 //// Thermal related flags
@@ -175,7 +180,7 @@ void tbl_charger_otg_vbus(int mode)
     if(mode&0xFF)
     {
         bq24196_set_chg_config(0x3); //OTG
-        bq24196_set_boost_lim(0x1); //1.3A on VBUS
+        bq24196_set_boost_lim(0x0); //1.3A->500mA on VBUS
         bq24196_set_en_hiz(0x0);        
         //OTG pin pull high, maybe can consider OTG pin always high
         mt_set_gpio_mode(GPIO_OTG_DRVVBUS_PIN,GPIO_MODE_GPIO);  
@@ -865,8 +870,16 @@ static void mt6320_usb_update(struct mt6320_usb_data *usb_data)
 		if ( (BMT_status.charger_type == STANDARD_HOST) ||
 			 (BMT_status.charger_type == CHARGING_HOST)		)
 		{
-		    usb_data->USB_ONLINE = 1;
-		    usb_psy->type = POWER_SUPPLY_TYPE_USB;
+                    /*lenovo-sw begin xuwei9,16944 screen flash with usb in low battery */
+		    if (BMT_status.bat_vol <= SYSTEM_OFF_VOLTAGE && BMT_status.SOC < 1 && (BMT_status.charger_type == STANDARD_HOST) )
+                    {
+		        usb_data->USB_ONLINE = 0;
+                        xlog_printk(ANDROID_LOG_INFO, "Power/Battery", "[BAT BATTERY] VBAT < %d mV with USB : Android will Power Off System !!\r\n", SYSTEM_OFF_VOLTAGE);
+                    }else{
+                    /*lenovo-sw end xuwei9,16944 screen flash with usb in low battery */
+                        usb_data->USB_ONLINE = 1;
+                        usb_psy->type = POWER_SUPPLY_TYPE_USB;
+                    }
 		}
     }
     else
@@ -1024,7 +1037,7 @@ static void mt6320_battery_update(struct mt6320_battery_data *bat_data)
 							}
 							else
 							{
-								if (Enable_BATDRV_LOG == 1) {
+                                                               if (Enable_BATDRV_LOG == 1) {
 									xlog_printk(ANDROID_LOG_INFO, "Power/Battery", "[Battery] Keep UI due to bat_volt_check_point=%d, BMT_status.SOC=%d\r\n",
 									bat_volt_check_point, BMT_status.SOC);
 								}
@@ -1063,7 +1076,11 @@ static void mt6320_battery_update(struct mt6320_battery_data *bat_data)
 			/*Use gas gauge*/
 			else
 			{
+/*begin lenovo-sw xuwei9 15088 ,still sync soc after system off voltage */
+#ifndef MTK_BQ27541_SUPPORT
 				gSyncPercentage=1;
+#endif
+/*end lenovo-sw xuwei9 15088 ,still sync soc after system off voltage */
 				bat_volt_check_point--;
 				if(bat_volt_check_point <= 0)
 				{
@@ -1519,8 +1536,10 @@ kal_bool pmic_chrdet_status(void)
 ///////////////////////////////////////////////////////////////////////////////////////////
 //// External charger
 ///////////////////////////////////////////////////////////////////////////////////////////
+#if !defined(MTK_KERNEL_POWER_OFF_CHARGING)
 int boot_soc_temp=0;
 int boot_soc_temp_count=0;
+#endif
 int boot_check_once=1;
 /*begin,lenovo-sw xuwei9 add 2013-3-7, modify current by temperature*/
 static int set_current_as_temp_bq24196(int temp_CC_value)
@@ -1857,20 +1876,28 @@ void select_charging_curret_bq24196(void)
         }
         else if (BMT_status.charger_type == NONSTANDARD_CHARGER)
         {
-            g_temp_CC_value = AC_CHARGER_CURRENT;
-            bq24196_set_iinlim(0x6); //IN current limit at 2A
+            g_temp_CC_value =USB_CHARGER_CURRENT;// AC_CHARGER_CURRENT;
+            bq24196_set_iinlim(0x2); //IN current limit at 2A->500mA
             bq24196_set_ac_current();
         }
         else if (BMT_status.charger_type == STANDARD_CHARGER)
         {
             g_temp_CC_value = AC_CHARGER_CURRENT;
+#ifdef      S6000L_ROW_COMMON
+            bq24196_set_iinlim(0x5); //IN current limit at 2A->1.5A
+#else
             bq24196_set_iinlim(0x6); //IN current limit at 2A
+#endif
             bq24196_set_ac_current();
         }
         else if (BMT_status.charger_type == CHARGING_HOST)
         {
             g_temp_CC_value = AC_CHARGER_CURRENT;
+#ifdef      S6000L_ROW_COMMON
+            bq24196_set_iinlim(0x5); //IN current limit at 2A->1.5A
+#else
             bq24196_set_iinlim(0x6); //IN current limit at 2A
+#endif
             bq24196_set_ac_current();
         }
         else
@@ -2625,6 +2652,7 @@ int BAT_CheckBatteryStatus_bq24196(void)
 	}
 #endif
 
+#if !defined(MTK_KERNEL_POWER_OFF_CHARGING)
     //workaround--------------------------------------------------
     if( (gFG_booting_counter_I_FLAG < 2) && upmu_is_chr_det() )
     {
@@ -2652,6 +2680,7 @@ int BAT_CheckBatteryStatus_bq24196(void)
             }
         }       
     }    
+#endif
     //------------------------------------------------------------
 
     if (Enable_BATDRV_LOG == 1) {
@@ -2720,6 +2749,15 @@ int BAT_CheckBatteryStatus_bq24196(void)
     {
         printk(  "[BATTERY:bq24196] Battery Under Temperature or NTC fail !!\n\r");                
         BMT_status.bat_charging_state = CHR_ERROR;
+        
+#ifdef MTK_KERNEL_POWER_OFF_CHARGING
+        if(g_boot_mode == KERNEL_POWER_OFF_CHARGING_BOOT || g_boot_mode == LOW_POWER_OFF_CHARGING_BOOT)
+        {
+//            xlog_printk(ANDROID_LOG_INFO, "Power/Battery", "[BATTERY:bq24196] extend sleep time. \n");
+//            g_hrtimer_sleep_time = KPOC_SLEEP_TIME;
+        }
+#endif        
+        
         return PMU_STATUS_FAIL;
     }
     #endif
@@ -3277,6 +3315,65 @@ void BAT_thread_bq24196(void)
 
 #if defined(CONFIG_POWER_EXT)
     xlog_printk(ANDROID_LOG_INFO, "Power/Battery", "[BATTERY:bq24196] CONFIG_POWER_EXT, no update Android.\n");
+#elif defined(MTK_KERNEL_POWER_OFF_CHARGING) 
+	/*Only in kpoc mode*/
+	if(gFG_booting_counter_I_FLAG == 1)
+	{
+		/*Use no gas gauge*/
+		if( gForceADCsolution == 1 )
+		{
+			//do nothing
+		}
+		else
+		{
+		    //Question: add BQ27541 support?
+#ifdef MTK_BQ27541_SUPPORT
+            ret = bq27541_set_cmd_read(BQ27541_CMD_StateOfCharge, &returnData);
+            if(ret != 1)
+            {                
+                xlog_printk(ANDROID_LOG_INFO, "Power/Battery", "[BATTERY:bq27541] bq27541 i2c access error\n");
+            }	
+            else
+            {
+                mt6320_battery_main.BAT_CAPACITY = returnData;
+            }
+#endif		    
+		    
+			if(g_boot_mode == KERNEL_POWER_OFF_CHARGING_BOOT || g_boot_mode == LOW_POWER_OFF_CHARGING_BOOT)
+			{			
+				mt6320_ac_update(&mt6320_ac_main);
+				mt6320_usb_update(&mt6320_usb_main);
+				mt6320_battery_update(&mt6320_battery_main);  
+			}
+			xlog_printk(ANDROID_LOG_INFO, "Power/Battery", "[BATTERY] gFG_booting_counter_I_FLAG is 1, soc=%d\n", fgauge_read_capacity_by_v());
+		}
+	}
+	else if(gFG_booting_counter_I_FLAG == 2)
+	{
+	    /*
+		if(boot_check_once==1)
+		{
+			if( upmu_is_chr_det() == KAL_TRUE && BMT_status.SOC == 100 && get_rtc_spare_fg_value() == 100)
+			{
+				ret_val=get_bat_sense_volt(1);
+				if(ret_val > 4110)
+				{
+					g_bat_full_user_view = KAL_TRUE;                
+				}
+				printk("[BATTERY] ret_val=%d, g_bat_full_user_view=%d\n", ret_val, g_bat_full_user_view);
+			}
+			boot_check_once=0;
+		}
+		*/
+
+		mt6320_ac_update(&mt6320_ac_main);
+		mt6320_usb_update(&mt6320_usb_main);
+		mt6320_battery_update(&mt6320_battery_main);  	
+	}
+	else
+	{
+		xlog_printk(ANDROID_LOG_DEBUG, "Power/Battery", "[BATTERY] gFG_booting_counter_I_FLAG!=2 (%d)\r\n", gFG_booting_counter_I_FLAG);
+	}
 #else
     if(gFG_booting_counter_I_FLAG == 2)
     {
@@ -3355,6 +3452,19 @@ void BAT_thread_bq24196(void)
         g_Calibration_FG = 1;
         pchr_turn_off_charging_bq24196();
 
+#ifdef MTK_KERNEL_POWER_OFF_CHARGING
+        if(g_boot_mode == KERNEL_POWER_OFF_CHARGING_BOOT || g_boot_mode == LOW_POWER_OFF_CHARGING_BOOT)
+        {
+#ifdef LENOVO_ENABLE_KPOC_SLEEP
+	     xlog_printk(ANDROID_LOG_INFO, "Power/Battery", "[BATTERY:bq24196] Battery real full and release wake_lock\n");
+	    /* only kpoc mode */
+            wake_unlock(&battery_suspend_lock);
+#endif 
+            xlog_printk(ANDROID_LOG_INFO, "Power/Battery", "[BATTERY:bq24196] extend sleep time. \n");
+//            g_hrtimer_sleep_time = KPOC_SLEEP_TIME;
+        }
+#endif
+
         if(gFG_can_reset_flag == 1)
         {
             gFG_can_reset_flag = 0;
@@ -3424,6 +3534,19 @@ void BAT_thread_bq24196(void)
             fg_qmax_update_for_aging();
             g_Calibration_FG = 1;
             pchr_turn_off_charging_bq24196();
+
+#ifdef MTK_KERNEL_POWER_OFF_CHARGING
+        if(g_boot_mode == KERNEL_POWER_OFF_CHARGING_BOOT || g_boot_mode == LOW_POWER_OFF_CHARGING_BOOT)
+        {
+#ifdef LENOVO_ENABLE_KPOC_SLEEP
+	     xlog_printk(ANDROID_LOG_INFO, "Power/Battery", "[BATTERY:bq24196] Battery real full and release wake_lock\n");
+	    /* only kpoc mode */
+            wake_unlock(&battery_suspend_lock);
+#endif 
+            xlog_printk(ANDROID_LOG_INFO, "Power/Battery", "[BATTERY:bq24196] extend sleep time. \n");
+//            g_hrtimer_sleep_time = KPOC_SLEEP_TIME;
+	}
+#endif 
 
             if(gFG_can_reset_flag == 1)
             {
@@ -3501,8 +3624,10 @@ void PrechargeCheckStatus(void)
     bq24196_dump_register();
 
 #ifdef MTK_BQ27541_SUPPORT
+#ifndef MTK_KERNEL_POWER_OFF_CHARGING
 	g_ocv_lookup_done = 0;
     return;
+#endif
 #endif
 
     if( get_charger_detect_status() == KAL_TRUE ) //do not check USB device check at precharge state
@@ -3550,7 +3675,8 @@ void PrechargeCheckStatus(void)
         {
             wake_lock(&battery_suspend_lock);
 
-            if(BMT_status.charger_type == CHARGER_UNKNOWN && mt_usb_is_ready())
+            //if(BMT_status.charger_type == CHARGER_UNKNOWN && mt_usb_is_ready())
+            if(BMT_status.charger_type == CHARGER_UNKNOWN )
             {
                 CHR_Type_num = mt_charger_type_detection();
                 xlog_printk(ANDROID_LOG_INFO, "Power/Battery", "[BATTERY:bq24196] CHR_Type_num = %d\r\n", CHR_Type_num);
@@ -3681,6 +3807,10 @@ void PrechargeCheckStatus(void)
             else
             {
 #if !defined(CONFIG_POWER_EXT)            
+/*lenovo-sw begin: xuwei9  SELINAL-212 screen flash in low battery soc */
+                BMT_status.SOC = bat_volt_check_point ;
+                BMT_status.bat_vol = bat_vol ;
+/*lenovo-sw end: xuwei9 SELINAL-212*/
                 //update to android UI
                 mt6320_ac_update(&mt6320_ac_main);
                 mt6320_usb_update(&mt6320_usb_main);
@@ -4773,7 +4903,7 @@ enum hrtimer_restart battery_kthread_hrtimer_func(struct hrtimer *timer)
     battery_kthread_flag = 1; 
     wake_up_interruptible(&battery_kthread_waiter);
 
-//    xlog_printk(ANDROID_LOG_INFO, "Power/Battery", "[battery_kthread_hrtimer_func] \n");
+    xlog_printk(ANDROID_LOG_INFO, "Power/Battery", "[battery_kthread_hrtimer_func] \n");
     
     return HRTIMER_NORESTART;
 }

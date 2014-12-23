@@ -695,7 +695,8 @@ CHARGER_TYPE mt_charger_type_detection(void)
     if( g_first_check == 0 )
     {
         g_first_check = 1;
-        g_ret = hw_charger_type_detection();
+		mdelay(1000);
+		g_ret = hw_charger_type_detection();
     }
     else
     {

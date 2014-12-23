@@ -47,7 +47,24 @@
 #define RTC_RELPWR_WHEN_XRST	1   /* BBPU = 0 when xreset_rstb goes low */
 
 #define RTC_GPIO_USER_MASK	  (((1U << 13) - 1) & 0xff00)
-static int XOSC=0;
+
+
+static bool recovery_flag = false;
+
+static bool rtc_busy_wait(void);
+static bool Write_trigger(void);
+static U16 eosc_cali(void);
+static bool rtc_first_boot_init(void);
+static U16 get_frequency_meter(U16 val, U16 measureSrc, U16 window_size);
+static bool rtc_frequency_meter_check(void);
+static void rtc_recovery_flow(void);
+static bool rtc_recovery_mode_check(void);
+static bool rtc_init_after_recovery(void);
+static bool rtc_get_recovery_mode_stat(void);
+static bool rtc_gpio_init(void);
+static bool rtc_android_init(void);
+static bool rtc_lpd_init(void);
+static bool Writeif_unlock(void);
 
 static U16 RTC_Read(U16 addr)
 {
@@ -61,11 +78,305 @@ static void RTC_Write(U16 addr, U16 data)
 	pwrap_write((U32)addr, (U32)data);
 }
 
+static bool rtc_busy_wait(void)
+{
+	ulong begin = get_timer(0);
+	do {												
+		while (RTC_Read(RTC_BBPU) & RTC_BBPU_CBUSY)
+		{
+			/////>    Time > 1sec,  time out and set recovery mode enable.  </////
+			if (get_timer(begin) > 1000)
+			{
+				print("[RTC] rtc cbusy time out!!!!!\n");
+				return false;
+			}
+		}
+	} while (0);
 
-#define rtc_busy_wait()							 \
-do {												\
-	while (RTC_Read(RTC_BBPU) & RTC_BBPU_CBUSY);   \
-} while (0)
+	return true;
+}	
+
+static void rtc_call_exception(void)
+{
+	ASSERT(0);
+}
+
+static bool rtc_xosc_check_clock(U16 *result)
+{
+
+	///// fix me  loose range for frequency meter result////
+	if ((result[0] >= 3  &&result[0] <= 7 ) && 
+			(result[1] > 1500 && result[1] < 6000) &&
+			(result[2] == 0) &&
+			(result[3] == 0))
+		return true;
+	else
+		return false;		
+}
+
+static bool rtc_eosc_check_clock(U16 *result)
+{
+	if ((result[0] >= 3  &&result[0] <= 7 )&& 
+			(result[1] < 500) &&
+			(result[2] > 2 && result[2] < 9) &&
+			(result[3] > 300 && result[3] < 10400))
+		return true;
+	else
+		return false;
+}
+
+
+static void rtc_xosc_write(U16 val)
+{
+	U16 bbpu;
+
+	RTC_Write(RTC_OSC32CON, 0x1a57);
+	mdelay(1);
+	//rtc_busy_wait();
+	RTC_Write(RTC_OSC32CON, 0x2b68);
+	mdelay(1);
+	//rtc_busy_wait();
+
+	RTC_Write(RTC_OSC32CON, val);
+	mdelay(1);
+	//rtc_busy_wait();
+#if 0
+	if (reload) {
+		bbpu = RTC_Read(RTC_BBPU) | RTC_BBPU_KEY | RTC_BBPU_RELOAD;
+		RTC_Write(RTC_BBPU, bbpu);
+		Write_trigger();
+	}
+#endif
+}
+
+static U16 get_frequency_meter(U16 val, U16 measureSrc, U16 window_size)
+{
+	U16 ret;
+	int i;
+	ulong begin = get_timer(0);
+
+	if(val!=0)
+		rtc_xosc_write(val);
+
+	RTC_Write(TOP_RST_CON, 0x0100);			//FQMTR reset
+	while( !(RTC_Read(FQMTR_CON2)==0)  && (0x8&RTC_Read(FQMTR_CON0))==0x8);
+	RTC_Write(TOP_RST_CON, 0x0000);			//FQMTR normal
+
+	RTC_Write(FQMTR_CON1, window_size); //set freq. meter window value (0=1X32K(fix clock))
+	RTC_Write(FQMTR_CON0, 0x8000 | measureSrc); //enable freq. meter, set measure clock to 26Mhz
+
+	mdelay(1);
+	while( (0x8&RTC_Read(FQMTR_CON0))==0x8 )
+	{
+		if (get_timer(begin) > 1000)
+		{
+			print("get frequency time out\n");
+			break;
+		}
+	};		// FQMTR read until ready
+	
+	ret = RTC_Read(FQMTR_CON2);				//read data should be closed to 26M/32k = 812.5		
+	print("[RTC] get_frequency_meter: input=0x%x, ouput=%d\n",val, ret);
+
+	return ret;
+}
+
+static void rtc_measure_four_clock(U16 *result)
+{
+	U16 window_size;
+	
+	RTC_Write(TOP_CKCON2, (RTC_Read(TOP_CKCON2) & ~0x8000) ); //select 26M as fixed clock
+	window_size = 4;
+	mdelay(1);
+	result[0] = get_frequency_meter(0, 0x0004, window_size); 		//select 26M as target clock
+	
+	//select XOSC_DET as fixed clock
+	RTC_Write(TOP_CKTST2, (RTC_Read(TOP_CKTST2) & ~0x00C0));  
+	RTC_Write(TOP_CKCON2, (RTC_Read(TOP_CKCON2) | 0x8000));
+	window_size = 4;
+	mdelay(1);
+	result[1] = get_frequency_meter(0, 0x0004, window_size); 		//select 26M as target clock
+	
+	//select 26M as fixed clock
+	//RTC_Write(TOP_CKTST2, (RTC_Read(TOP_CKTST2) & ~0x0080));  
+	RTC_Write(TOP_CKCON2, (RTC_Read(TOP_CKCON2) & ~0x8000));
+	window_size = 794 * 5;
+	mdelay(1);
+	//result[2] = get_frequency_meter(0x0007, 0x0000, window_size); 								//select DCXO_32 as target clock
+	result[2] = get_frequency_meter(0, 0x0000, window_size); 								//select DCXO_32 as target clock
+	result[2] = get_frequency_meter(0, 0x0001, window_size); 								//select DCXO_32 as target clock
+	//result[2] = get_frequency_meter(0x0007, 0x0002, window_size); 								//select DCXO_32 as target clock
+
+	//select EOSC_32 as fixed clock
+	RTC_Write(TOP_CKTST2, (RTC_Read(TOP_CKTST2) | 0x0080 & ~0x0040));  
+	RTC_Write(TOP_CKCON2, (RTC_Read(TOP_CKCON2) | 0x8000));
+	window_size = 4;
+	mdelay(1);
+	result[3] = get_frequency_meter(0, 0x0004, window_size); 			//select 26M as target clock
+	
+	RTC_Write(TOP_CKCON2, (RTC_Read(TOP_CKCON2) | 0x8000) ); //restore 32K clock
+}
+
+static void rtc_switch_mode(bool XOSC, bool recovery)
+{
+	if (XOSC)
+	{
+		if (recovery)
+		{
+			/* HW bypass switch mode control and set to XOSC */
+			RTC_Write(CHRSTATUS, (RTC_Read(CHRSTATUS) | 0x0800 & ~0x0200));
+		}
+		rtc_xosc_write(0x0003);  /* assume crystal exist mode + XOSCCALI = 0x3 */
+		if (recovery)
+			mdelay(1000);
+	} else 
+	{
+		if (recovery)
+		{
+			/* HW bypass switch mode control and set to DCXO */
+			RTC_Write(CHRSTATUS, (RTC_Read(CHRSTATUS) | 0x0A00));
+		}
+		rtc_xosc_write(0x240F); /*crystal not exist + eosc cali = 0xF*/
+		mdelay(10);
+	}
+}
+
+static void rtc_switch_to_xosc_mode()
+{
+	rtc_switch_mode(true, false);
+}
+
+static void rtc_switch_to_dcxo_mode()
+{
+	rtc_switch_mode(false, false);
+}
+
+static void rtc_switch_to_xosc_recv_mode()
+{
+	rtc_switch_mode(true, true);
+}
+
+static void rtc_switch_to_dcxo_recv_mode()
+{
+	rtc_switch_mode(false, true);
+}
+
+static bool rtc_get_xosc_mode(void)
+{
+	U16 con, xosc_mode;;
+
+	con = RTC_Read(RTC_OSC32CON);
+	
+	if((con & 0x0020) == 0)
+	{
+		xosc_mode = 1;
+	} 
+	else
+		xosc_mode = 0;
+	return xosc_mode;
+}
+
+static bool rtc_frequency_meter_check(void)
+{
+	U16  result[4];
+
+	if (rtc_get_recovery_mode_stat())
+		rtc_switch_to_xosc_recv_mode();
+		
+	rtc_measure_four_clock(result);
+	if (rtc_xosc_check_clock(result))
+	{
+		rtc_xosc_write(0x0000);	/* crystal exist mode + XOSCCALI = 0 */
+		return true;
+	}
+	else
+	{
+		if (!rtc_get_recovery_mode_stat())
+			rtc_switch_to_dcxo_mode();
+		else
+			rtc_switch_to_dcxo_recv_mode();
+	}
+
+	rtc_measure_four_clock(result);
+	
+	if (rtc_eosc_check_clock(result))
+	{
+		U16 val;
+
+		val = eosc_cali();
+		print("[RTC] EOSC cali val = 0x%x\n", val);
+		//EMB_HW_Mode
+		val = (val & 0x001f)|0x2400;
+		rtc_xosc_write(val);
+		return true;
+	}
+	else
+	{
+		return false;
+	}
+}
+
+static void rtc_set_recovery_mode_stat(bool enable)
+{
+	recovery_flag = enable;
+}
+
+static bool rtc_get_recovery_mode_stat(void)
+{
+	return recovery_flag;
+}
+
+static bool rtc_init_after_recovery(void)
+{
+	if (!Writeif_unlock())
+		return false;
+	/* write powerkeys */
+	RTC_Write(RTC_POWERKEY1, RTC_POWERKEY1_KEY);
+	RTC_Write(RTC_POWERKEY2, RTC_POWERKEY2_KEY);
+	if (!Write_trigger())
+		return false;
+
+	RTC_Write(CHRSTATUS, (RTC_Read(CHRSTATUS) & ~0x0800));
+	
+	if (!rtc_gpio_init())
+		return false;
+	if (!rtc_android_init())
+		return false;
+	if (!rtc_lpd_init())
+		return false;
+
+	return true;
+}
+static bool rtc_recovery_mode_check(void)
+{
+	/////// fix me add return ret for recovery mode check fail
+	if (!rtc_frequency_meter_check())
+	{
+		rtc_call_exception();
+		return false;
+	}
+	return true;
+}
+
+static void rtc_recovery_flow(void)
+{
+	U8 count = 0;
+	print("rtc_recovery_flow\n");
+	rtc_set_recovery_mode_stat(true);
+	while (count < 3)
+	{
+		if(rtc_recovery_mode_check()) 
+		{
+			if (rtc_init_after_recovery())
+				break;
+		} 
+		count++;
+	} 
+	rtc_set_recovery_mode_stat(false);
+	if (count == 3)
+		rtc_call_exception();
+
+}
 #if defined (MTK_KERNEL_POWER_OFF_CHARGING)
 extern kal_bool kpoc_flag ;
 #endif
@@ -87,40 +398,28 @@ static unsigned long rtc_mktime(int yea, int mth, int dom, int hou, int min, int
 	return ((d3 * 24 + hou) * 60 + min) * 60 + sec;
 }
 
-static void Write_trigger(void)
+static bool Write_trigger(void)
 {
 	RTC_Write(RTC_WRTGR, 1);
-	rtc_busy_wait();
+	if (rtc_busy_wait())
+		return true;
+	else
+		return false;
 }
 
-static void Writeif_unlock(void)
+static bool Writeif_unlock(void)
 {
 	RTC_Write(RTC_PROT, 0x586a);
-	Write_trigger();
+	if (!Write_trigger())
+		return false;
 	RTC_Write(RTC_PROT, 0x9136);
-	Write_trigger();
+	if (!Write_trigger())
+		return false;
+	
+	return true;
 }
 
-static void rtc_xosc_write(U16 val, bool reload)
-{
-	U16 bbpu;
-
-	RTC_Write(RTC_OSC32CON, 0x1a57);
-	rtc_busy_wait();
-	RTC_Write(RTC_OSC32CON, 0x2b68);
-	rtc_busy_wait();
-
-	RTC_Write(RTC_OSC32CON, val);
-	rtc_busy_wait();
-
-	if (reload) {
-		bbpu = RTC_Read(RTC_BBPU) | RTC_BBPU_KEY | RTC_BBPU_RELOAD;
-		RTC_Write(RTC_BBPU, bbpu);
-		Write_trigger();
-	}
-}
-
-static void rtc_android_init(void)
+static bool rtc_android_init(void)
 {
 	U16 irqsta;
 
@@ -143,7 +442,8 @@ static void rtc_android_init(void)
 
 	RTC_Write(RTC_DIFF, 0);
 	RTC_Write(RTC_CALI, 0);
-	Write_trigger();
+	if (!Write_trigger())
+		return false;
 
 	irqsta = RTC_Read(RTC_IRQ_STA);	/* read clear */
 
@@ -155,10 +455,13 @@ static void rtc_android_init(void)
 	RTC_Write(RTC_TC_HOU, 0);
 	RTC_Write(RTC_TC_MIN, 0);
 	RTC_Write(RTC_TC_SEC, 0);
-	Write_trigger();
+	if(!Write_trigger())
+		return false;
+
+	return true;
 }
 
-static void rtc_gpio_init(void)
+static bool rtc_gpio_init(void)
 {
 	U16 con;
 
@@ -167,31 +470,10 @@ static void rtc_gpio_init(void)
 	con &= ~(RTC_CON_GOE | RTC_CON_GPU);
 	con |= RTC_CON_GPEN | RTC_CON_F32KOB;
 	RTC_Write(RTC_CON, con);
-	Write_trigger();
-}
-
-static U16 get_frequency_meter(U16 val)
-{
-	U16 ret;
-	int i;
-
-	if(val!=0)
-		rtc_xosc_write(val, true);
-
-	RTC_Write(TOP_RST_CON, 0x0100);
-	while( !(RTC_Read(FQMTR_CON2)==0) );
-	RTC_Write(TOP_RST_CON, 0x0000);
-
-	RTC_Write(FQMTR_CON1, 0x0000);
-	RTC_Write(FQMTR_CON0, 0x8004);
-
-	mdelay(1);
-	while( (0x8&RTC_Read(FQMTR_CON0))==0x8 );
-	
-	ret = RTC_Read(FQMTR_CON2);
-	print("[RTC] get_frequency_meter: input=0x%x, ouput=%d\n",val, ret);
-
-	return ret;
+	if (Write_trigger())
+		return true;
+	else
+		return false;
 }
 
 static U16 eosc_cali(void)
@@ -204,13 +486,14 @@ static U16 eosc_cali(void)
 
 	int left = 0x24C0, right=0x24DF;
 
+	RTC_Write(TOP_CKCON2, (RTC_Read(TOP_CKCON2) | 0x8000));
 	while( left<=(right) )
 	{
 		middle = (right + left) / 2;
 		if(middle == left)
 			break;
 
-		val = get_frequency_meter(middle);
+		val = get_frequency_meter(middle, 0x0004, 0);
 		if ((val>792) && (val<796))
 			break;
 		if (val > 795)
@@ -224,9 +507,9 @@ static U16 eosc_cali(void)
 	if ((val>792) && (val<796))
 		return middle;
 	
-	val=get_frequency_meter(left);
+	val=get_frequency_meter(left, 0x0004, 0);
 	diff=793-val;
-	val=get_frequency_meter(right);
+	val=get_frequency_meter(right, 0x0004, 0);
 	if(diff<(val-793))
 		return left;
 	else
@@ -235,24 +518,21 @@ static U16 eosc_cali(void)
 
 static void rtc_osc_init(void)
 {
-	U16 con;
-
-	//con = RTC_Read(RTC_OSC32CON);
-
 	/* disable 32K export if there are no RTC_GPIO users */
 	if (!(RTC_Read(RTC_PDN1) & RTC_GPIO_USER_MASK))
 		rtc_gpio_init();
-
-	if(XOSC==1)
+	
+	if(rtc_get_xosc_mode())
 	{
-		RTC_Write(TOP_CKTST2, 0x0);	
+		U16 con;
+		RTC_Write(TOP_CKTST2, 0x0);
 		con = RTC_Read(RTC_OSC32CON);
 		if ((con & 0x000f) != 0x0) {	/* check XOSCCALI */
-			rtc_xosc_write(0x0003, false);  /* crystal exist mode + XOSCCALI = 0x3 */
+			rtc_xosc_write(0x0003);  /* crystal exist mode + XOSCCALI = 0x3 */
 			gpt_busy_wait_us(200);
 		}
 	
-		rtc_xosc_write(0x0000, true);  /* crystal exist mode + XOSCCALI = 0x0 */
+		rtc_xosc_write(0x0000);  /* crystal exist mode + XOSCCALI = 0x0 */
 	}
 	else
 	{
@@ -262,68 +542,58 @@ static void rtc_osc_init(void)
 		print("[RTC] EOSC cali val = 0x%x\n", val);
 		//EMB_HW_Mode
 		val = (val & 0x001f)|0x2400;
-		rtc_xosc_write(val, true);		
+		rtc_xosc_write(val);		
 	}
 }
 
-static void rtc_lpd_init(void)
+static bool rtc_lpd_init(void)
 {
 	U16 con;
 
 	con = RTC_Read(RTC_CON) | RTC_CON_LPEN;
 	con &= ~RTC_CON_LPRST;
 	RTC_Write(RTC_CON, con);
-	Write_trigger();
+	if (!Write_trigger())
+		return false;
 
 	con |= RTC_CON_LPRST;
 	RTC_Write(RTC_CON, con);
-	Write_trigger();
+	if (!Write_trigger())
+		return false;
 
 	con &= ~RTC_CON_LPRST;
 	RTC_Write(RTC_CON, con);
-	Write_trigger();
+	if (!Write_trigger())
+		return false;
+
+	return true;
 }
 
-static void rtc_power_inconsistent_init(void)
+static bool rtc_first_boot_init(void)
 {
-	rtc_gpio_init();
-	if(XOSC==1)
-	{
-		RTC_Write(TOP_CKTST2, 0);
-		rtc_xosc_write(0x0003, false);  /* crystal exist mode + XOSCCALI = 0x3 */
-	}
-	else
-	{
-		RTC_Write(TOP_CKTST2, 0x80);
-		rtc_xosc_write(0x240F, false); /*crystal not exist + eosc cali = 0xF*/
-	}	
-	rtc_android_init();
+	print("rtc_first_boot_init\n");
 
+	if (!Writeif_unlock())
+		return false;
+
+	if (!rtc_gpio_init())	
+		return false;
+	rtc_switch_to_xosc_mode();
 	/* write powerkeys */
 	RTC_Write(RTC_POWERKEY1, RTC_POWERKEY1_KEY);
 	RTC_Write(RTC_POWERKEY2, RTC_POWERKEY2_KEY);
-	Write_trigger();
+	if (!Write_trigger())
+		return false;
+	mdelay(1000);
 
-	if(XOSC==1)
-	{
-//		gpt_busy_wait_us(200);
-//		rtc_xosc_write(0x0005, false);
-//		gpt_busy_wait_us(200);
-//		rtc_xosc_write(0x0003, false);
-//		gpt_busy_wait_us(200);
-		rtc_xosc_write(0x0000, true);	/* crystal exist mode + XOSCCALI = 0 */
-	}
-	else
-	{
-		U16 val;
-		val = eosc_cali();
-		print("[RTC] EOSC cali val = 0x%x\n", val);
-		//EMB_HW_Mode
-		val = (val & 0x001f)|0x2400;
-		rtc_xosc_write(val, true);
-	}
+	if (!rtc_frequency_meter_check())
+		return false;
+	if (!rtc_android_init())
+		return false;
+	if (!rtc_lpd_init())
+		return false;
 
-	rtc_lpd_init();
+	return true;
 }
 
 static void rtc_bbpu_power_down(void)
@@ -392,83 +662,56 @@ U16 rtc_rdwr_uart_bits(U16 *val)
 bool rtc_boot_check(void)
 {
 	U16 irqsta, pdn1, pdn2, spar0, spar1, Rdata;
-
+	U16 result[4];
+	bool check_mode_flag = false;
 	//Disable RTC CLK gating
 	RTC_Write(TOP_CKPDN, 0);
 	RTC_Write(TOP_CKPDN2, 0);
 
 	RTC_Write(TOP_CKCON2, (RTC_Read(TOP_CKCON2)|0x8000) );//how many 26M pulse in one 32K pulse
-#if 0
-	//reset freq. meter
-	RTC_Write(TOP_RST_CON, 0x0100);
-	while( !(RTC_Read(FQMTR_CON2)==0) );
-	RTC_Write(TOP_RST_CON, 0x0000);
-
-	//Select fix clock source
-	RTC_Write(TOP_CKTST2, 0x80); //swtich to EOSC32 
-	RTC_Write(TOP_CKTST2, 0x00); //swtich to XOSC32_DET
-	RTC_Write(FQMTR_CON1, 0); //set freq. meter window value (0=1X32K(fix clock))
-	RTC_Write(FQMTR_CON0, 0x8004); //enable freq. meter, set measure clock to 26Mhz
-	
-	mdelay(1);
-
-	while( (0x8 & RTC_Read(FQMTR_CON0))==0x8); //read until busy = 0
-	Rdata = RTC_Read(FQMTR_CON2); //read data should be closed to 26M/32k = 812.5
-	print("[RTC] FQMTR_CON2=0x%x\n", Rdata);
-#endif
-	
-	RTC_Write(TOP_CKTST2, 0x00); //swtich to XOSC32_DET
-	
-	Rdata = RTC_Read(TOP_CKCON1);
-	if(! (Rdata&0x0010) )
-	{	
-		print("[RTC] TOP_CKCON1=0x%x\n", Rdata);
-		RTC_Write(TOP_CKCON1, Rdata|0x0010);
-		mdelay(1);
-	}
-	Rdata = get_frequency_meter(0);
-	if(Rdata==0)
+	print("[RTC] bbpu = 0x%x, con = 0x%x\n", RTC_Read(RTC_BBPU), RTC_Read(RTC_CON));
+	if ((RTC_Read(RTC_CON) & RTC_CON_LPSTA_RAW || check_mode_flag)) 
 	{
-		//crystal doesn't exist
-		XOSC=0;
-		print("[RTC] External crystal doesn't exist\n");
+		if (!rtc_first_boot_init()) {
+			rtc_recovery_flow();
+		}
 	}
 	else
 	{
-		//crystal exist
-		XOSC=1;
-		print("[RTC] External crystal exist\n");
+		/* normally HW reload is done in BROM but check again here */
+		///fix me     rtc_busy_wait();///////
+		if (!rtc_busy_wait())
+			rtc_recovery_flow();
+		///////////////////////////////////
+		if (!Writeif_unlock())
+			rtc_recovery_flow();
 	}
 
-	print("[RTC] bbpu = 0x%x, con = 0x%x\n", RTC_Read(RTC_BBPU), RTC_Read(RTC_CON));
-
-	/* normally HW reload is done in BROM but check again here */
-	while (RTC_Read(RTC_BBPU) & RTC_BBPU_CBUSY);
-
-	Writeif_unlock();
-
 	if (RTC_Read(RTC_POWERKEY1) != RTC_POWERKEY1_KEY ||
-		RTC_Read(RTC_POWERKEY2) != RTC_POWERKEY2_KEY ||
-		(RTC_Read(RTC_CON) & RTC_CON_LPSTA_RAW)) 
+		RTC_Read(RTC_POWERKEY2) != RTC_POWERKEY2_KEY) 
 	{
 		print("[RTC] powerkey1 = 0x%x, powerkey2 = 0x%x\n",
 			RTC_Read(RTC_POWERKEY1), RTC_Read(RTC_POWERKEY2));
-		rtc_power_inconsistent_init();
-	} else {
+		if (!rtc_first_boot_init()) {
+			rtc_recovery_flow();
+		}
+	} else
+	{
 		RTC_Write(RTC_BBPU, RTC_Read(RTC_BBPU) | RTC_BBPU_KEY | RTC_BBPU_RELOAD);
 		Write_trigger();
-		print("[RTC] RTC_OSC32CON=0x%x\n", RTC_Read(RTC_OSC32CON));
-		//print("xosc = 0x%x\n", RTC_Read(RTC_OSC32CON));
-		rtc_osc_init();
-		rtc_clean_mark();
+		rtc_osc_init();	
 	}
-
+	rtc_clean_mark();
 	//set register to let MD know 32k status
 	spar0 = RTC_Read(RTC_SPAR0);
-	if(XOSC==1)
+	if(rtc_get_xosc_mode())
+	{
 		RTC_Write(RTC_SPAR0, (spar0 | 0x0040) );
+	}
 	else
+	{
 		RTC_Write(RTC_SPAR0, (spar0 & 0xffbf) );
+	}
 	Write_trigger();
 
 
@@ -479,9 +722,9 @@ bool rtc_boot_check(void)
 	spar1 = RTC_Read(RTC_SPAR1);
 	print("[RTC] irqsta = 0x%x, pdn1 = 0x%x, pdn2 = 0x%x, spar0 = 0x%x, spar1 = 0x%x\n",
 		  irqsta, pdn1, pdn2, spar0, spar1);
-	print("[RTC] new_spare0 = 0x%x, new_spare1 = 0x%x, new_spare2 = 0x%x, new_spare3 = 0x%x",
+	print("[RTC] new_spare0 = 0x%x, new_spare1 = 0x%x, new_spare2 = 0x%x, new_spare3 = 0x%x\n",
 		  RTC_Read(RTC_AL_HOU), RTC_Read(RTC_AL_DOM), RTC_Read(RTC_AL_DOW), RTC_Read(RTC_AL_MTH));
-
+	print("[RTC] bbpu = 0x%x, con = 0x%x\n", RTC_Read(RTC_BBPU), RTC_Read(RTC_CON));
 
 
 	if (irqsta & RTC_IRQ_STA_AL) {
@@ -496,6 +739,7 @@ bool rtc_boot_check(void)
 			U16 now_sec, now_min, now_hou, now_dom, now_mth, now_yea;
 			U16 irqen, sec, min, hou, dom, mth, yea;
 			unsigned long now_time, time;
+			unsigned long time_upper, time_lower;
 
 			now_sec = RTC_Read(RTC_TC_SEC);
 			now_min = RTC_Read(RTC_TC_MIN);
@@ -526,8 +770,19 @@ bool rtc_boot_check(void)
 				  now_yea, now_mth, now_dom, now_hou, now_min, now_sec, now_time);
 			print("[RTC] power-on = %d/%d/%d %d:%d:%d (%u)\n",
 				  yea, mth, dom, hou, min, sec, time);
-
-			if (now_time >= time - 1 && now_time <= time + 4) {	 /* power on */
+	
+	#if defined (MTK_KERNEL_POWER_OFF_CHARGING)		
+			if (kpoc_flag == true) {
+				time_upper = time + 5;
+				time_lower = time - 2;
+			} else
+ #endif
+			{
+				time_upper = time + 4;
+				time_lower = time - 1;
+			}
+			//print("[RTC] now =%u time_upper = %u time_lower = %u\n", now_time, time_upper, time_lower);
+			if (now_time >= time_lower && now_time <= time_upper) {	 /* power on */
 				pdn1 = (pdn1 & ~0x0080) | 0x0040;
 				RTC_Write(RTC_PDN1, pdn1);
 				RTC_Write(RTC_PDN2, pdn2 | 0x0010);

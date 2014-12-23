@@ -346,7 +346,7 @@ int boot_linux_from_storage(void)
     custom_port_in_kernel(g_boot_mode, commanline);
     strlen += sprintf(commanline, "%s lcm=%1d-%s", commanline, DISP_IsLcmFound(), mt_disp_get_lcm_id());
     strlen += sprintf(commanline, "%s fps=%1d", commanline, mt_disp_get_lcd_time());
- 
+    strlen += sprintf(commanline, "%s lcm_type=%1d", commanline,  mt_disp_get_lcd_type());
 
     boot_linux((void *)CFG_BOOTIMG_LOAD_ADDR, (unsigned *)CFG_BOOTARGS_ADDR,
 		   (char *)commanline, board_machtype(),

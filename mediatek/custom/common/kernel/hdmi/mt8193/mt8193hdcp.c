@@ -724,6 +724,7 @@ void HdcpService(HDCP_CTRL_STATE_T e_hdcp_state)
     
     case HDCP_WAIT_RES_CHG_OK:
 	MT8193_HDCP_LOG("HDCP_WAIT_RES_CHG_OK\n");
+	_bReAUTHCount = 0;
     if(fgIsHDCPCtrlTimeOut())
     {
       if(_bHdcpOff == 1) //disable HDCP

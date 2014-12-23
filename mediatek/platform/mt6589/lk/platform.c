@@ -400,13 +400,20 @@ void platform_init(void)
 	time_load_logo = get_timer(0);
 #endif
     mboot_common_load_logo((unsigned long)mt_get_logo_db_addr(), "logo");
-#if ((!defined(MTK_NCP1851_SUPPORT)) && (!defined(MTK_BQ24196_SUPPORT)))    
+#ifdef MTK_BATLOWV_NO_PANEL_ON_EARLY
+    if (!is_low_battery())
+    {
+#endif  
+#if (!defined(MTK_NCP1851_SUPPORT)&& (!defined(MTK_BQ24196_SUPPORT)))  
     mt_disp_power(TRUE);           //power on display related modules
-#endif    
+#endif
     dprintf(INFO, "Show BLACK_PICTURE\n");
     mt_disp_fill_rect(0, 0, CFG_DISPLAY_WIDTH, CFG_DISPLAY_HEIGHT, 0x0);
     mt_disp_update(0, 0, CFG_DISPLAY_WIDTH, CFG_DISPLAY_HEIGHT);
     mt_disp_update(0, 0, CFG_DISPLAY_WIDTH, CFG_DISPLAY_HEIGHT);
+#ifdef MTK_BATLOWV_NO_PANEL_ON_EARLY
+    }
+#endif    
 #ifdef LK_PROFILING
     printf("[PROFILE] ------- load_logo takes %d ms -------- \n", get_timer(time_load_logo));
     time_backlight = get_timer(0);
@@ -414,8 +421,15 @@ void platform_init(void)
 
     /*for kpd pmic mode setting*/
     set_kpd_pmic_mode();
-#if ((!defined(MTK_NCP1851_SUPPORT)) && (!defined(MTK_BQ24196_SUPPORT)))
+#ifdef MTK_BATLOWV_NO_PANEL_ON_EARLY
+    if (!is_low_battery())
+    {
+#endif
+#if (!defined(MTK_NCP1851_SUPPORT)&& (!defined(MTK_BQ24196_SUPPORT)))  
     mt65xx_backlight_on();
+#endif 
+#ifdef MTK_BATLOWV_NO_PANEL_ON_EARLY
+    }
 #endif    
 #ifdef LK_PROFILING
     printf("[PROFILE] ------- backlight takes %d ms -------- \n", get_timer(time_backlight));
@@ -490,6 +504,11 @@ void platform_init(void)
     time_bat_init = get_timer(0);
 #endif
     mt65xx_bat_init();
+#ifdef MTK_KERNEL_POWER_OFF_CHARGING
+#ifdef MTK_BQ24196_SUPPORT
+        mt_disp_power(TRUE);
+#endif
+#endif
 #ifdef LK_PROFILING
     printf("[PROFILE] ------- battery init takes %d ms -------- \n", get_timer(time_bat_init));
 #endif
@@ -506,11 +525,27 @@ void platform_init(void)
 #ifdef MTK_KERNEL_POWER_OFF_CHARGING
 	if(kernel_charging_boot() == 1)
 	{         
-		
+#if ((defined(MTK_NCP1851_SUPPORT)) || (defined(MTK_BQ24196_SUPPORT)))
+        /******************************************************************
+           ONLY for tablet project                                        
+		   NO display when low battery and usb charger                    
+		   Because in tablet project, USB charger will provide 500mA most
+		   but tablet panel will consume more than 500mA in general.
+		   It will cause system shutdown suddenly, charging process will terminate
+		 ******************************************************************/
+		if ((g_boot_mode != LOW_POWER_OFF_CHARGING_BOOT) ||
+		    ((mt_charger_type_detection() != STANDARD_HOST) && (mt_charger_type_detection() != CHARGING_HOST)))
+		{
+			printf("g_boot_mode = %d\n", g_boot_mode);
+#endif			    
 		mt_disp_power(TRUE);
-		mt_disp_show_low_battery();	
+		//mt_disp_show_low_battery();	
+		mt_disp_show_boot_logo();
 		mt_disp_wait_idle();		
 		mt65xx_leds_brightness_set(6, 110);	
+#if ((defined(MTK_NCP1851_SUPPORT)) || (defined(MTK_BQ24196_SUPPORT)))
+		}		
+#endif
 	}   
 	else if(g_boot_mode != KERNEL_POWER_OFF_CHARGING_BOOT && g_boot_mode != LOW_POWER_OFF_CHARGING_BOOT)
 	{

@@ -242,16 +242,26 @@ static void init_dpi(BOOL isDpiPoweredOn)
 void init_dsi(BOOL isDsiPoweredOn)
 {
     DSI_CHECK_RET(DSI_Init(isDsiPoweredOn));
-
-    DSI_CHECK_RET(DSI_TXRX_Control(TRUE,                    //cksm_en
+	if(0 < lcm_params->dsi.compatibility_for_nvk)
+		DSI_CHECK_RET(DSI_TXRX_Control(TRUE,                    //cksm_en
                                    TRUE,                    //ecc_en
                                    lcm_params->dsi.LANE_NUM, //ecc_en
                                    0,                       //vc_num
                                    FALSE,                   //null_packet_en
                                    FALSE,                   //err_correction_en
                                    FALSE,                   //dis_eotp_en
+								   FALSE,
                                    0));                     //max_return_size
-
+	else
+		DSI_CHECK_RET(DSI_TXRX_Control(TRUE,                    //cksm_en
+                                   TRUE,                    //ecc_en
+                                   lcm_params->dsi.LANE_NUM, //ecc_en
+                                   0,                       //vc_num
+                                   FALSE,                   //null_packet_en
+                                   FALSE,                   //err_correction_en
+                                   FALSE,                   //dis_eotp_en
+								   (BOOL)(1 - lcm_params->dsi.cont_clock),
+                                   0));                     //max_return_size
     
 	//initialize DSI_PHY
 	DSI_PLL_Select(lcm_params->dsi.pll_select);
@@ -268,6 +278,7 @@ void init_dsi(BOOL isDsiPoweredOn)
 
 	if(lcm_params->dsi.mode != CMD_MODE)
 	{
+		DSI_Set_VM_CMD(lcm_params);
 		DSI_Config_VDO_Timing(lcm_params);
 #ifndef MT65XX_NEW_DISP
         DSI_CHECK_RET(DSI_PS_Control(lcm_params->dsi.PS, lcm_params->width * dsiTmpBufBpp,lcm_params->width * dsiTmpBufBpp));
@@ -300,17 +311,13 @@ static DISP_STATUS dsi_init(UINT32 fbVA, UINT32 fbPA, BOOL isLcmInited)
 #endif
 		init_dsi(isLcmInited);
 		mdelay(1);
-
+		DSI_clk_HS_mode(0);
 		if (NULL != lcm_drv->init && !isLcmInited) 
 		{
 			lcm_drv->init();
 			DSI_LP_Reset();
 		}
-//#ifndef MT65XX_NEW_DISP
-//		DSI_clk_HS_mode(0);
-//#else
-		DSI_clk_HS_mode(1);
-//#endif
+
 		DSI_SetMode(lcm_params->dsi.mode);
 #ifndef MT65XX_NEW_DISP
 		DPI_PowerOn();
@@ -466,7 +473,7 @@ DISP_STATUS dsi_enable_power(BOOL enable)
 			DSI_CHECK_RET(DSI_PowerOn());
 			DSI_clk_ULP_mode(0);			
 			DSI_lane0_ULP_mode(0);
-			DSI_clk_HS_mode(1);	
+//			DSI_clk_HS_mode(1);	
 			printf("%s,%d\n", __func__, __LINE__);
 
 			DSI_CHECK_RET(DSI_enable_MIPI_txio(TRUE));
@@ -568,7 +575,7 @@ static DISP_STATUS dsi_update_screen(void)
 	LCD_CHECK_RET(LCD_StartTransfer(FALSE));
 #endif
 	if (lcm_params->type==LCM_TYPE_DSI && lcm_params->dsi.mode == CMD_MODE && !DDMS_capturing) {
-		DSI_clk_HS_mode(1);
+		DSI_clk_HS_mode(0);
 #ifdef MT65XX_NEW_DISP
 		DSI_CHECK_RET(DSI_StartTransfer(needStartDSI));
 #else

@@ -114,6 +114,11 @@ void mt_disp_power(BOOL on)
 		mt_disp_update(0, 0, CFG_DISPLAY_WIDTH, CFG_DISPLAY_HEIGHT);
 		mt_disp_update(0, 0, CFG_DISPLAY_WIDTH, CFG_DISPLAY_HEIGHT);
     } else {
+#ifdef S6000_COMMON
+        /*add for S6000 BOE disp flash while backlight off*/
+        mt_disp_fill_rect(0, 0, CFG_DISPLAY_WIDTH, CFG_DISPLAY_HEIGHT,0x0);
+        mt_disp_update(0, 0, CFG_DISPLAY_WIDTH, CFG_DISPLAY_HEIGHT);
+#endif
         DISP_PanelEnable(FALSE);
         DISP_PowerEnable(FALSE);
 		disp_path_ddp_clock_off();
@@ -150,14 +155,22 @@ void mt_disp_update(UINT32 x, UINT32 y, UINT32 width, UINT32 height)
     if(fb_isdirty)
     {
         fb_isdirty = 0;
+
+#if S6000_COMMON
+        //we do this only for S6000
         MASKREG32(0x14011000, 0x1, 0x1); //Enable DISP MUTEX0
-	    MASKREG32(0x14011004, 0x1, 0x0);
-        LCD_CHECK_RET(LCD_LayerSetAddress(FB_LAYER - 1, (UINT32)fb_addr + fb_offset_logo * fb_size));
+        MASKREG32(0x14011004, 0x1, 0x0);
+#endif
+
+	LCD_CHECK_RET(LCD_LayerSetAddress(FB_LAYER - 1, (UINT32)fb_addr + fb_offset_logo * fb_size));
         printk("[wwy] hardware address = %x, fb_offset_logo = %d\n",(UINT32)fb_addr + fb_offset_logo * fb_size,fb_offset_logo);
         DISP_CHECK_RET(DISP_UpdateScreen(x, y, width, height));
+#if S6000_COMMON
         //wait reg update to set fb_offset_logo
         DISP_WaitRegUpdate();
-        fb_offset_logo = fb_offset_logo ? 0 : 3;
+#endif
+
+	fb_offset_logo = fb_offset_logo ? 0 : 3;
 
     }
     else
@@ -226,6 +239,14 @@ UINT32 mt_disp_get_lcd_time(void)
 		return (100000000/lcd_time);
 	else
 		return (6000);
+}
+
+UINT32 mt_disp_get_lcd_type(void)
+{
+	if(lcm_params->type==LCM_TYPE_DSI)
+		return 1;
+	else
+		return 0;
 }
 
 const char* mt_disp_get_lcm_id(void)

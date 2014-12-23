@@ -335,15 +335,15 @@ void platform_set_chrg_cur(int ma)
 static boot_reason_t platform_boot_status(void)
 {  
 #if defined (MTK_KERNEL_POWER_OFF_CHARGING)
-	while(1)
-	{
-		if (rtc_boot_check()) {
-			print("%s RTC boot!\n", MOD);
-			return BR_RTC;
-		}
-		if(!kpoc_flag)
-			break;
-	}
+    ulong begin = get_timer(0);
+    do  {
+        if (rtc_boot_check()) {
+            print("%s RTC boot!\n", MOD);
+            return BR_RTC;
+        }
+        if(!kpoc_flag)
+            break;
+    } while (get_timer(begin) < 1000 && kpoc_flag);
 #else
     if (rtc_boot_check()) {
         print("%s RTC boot!\n", MOD);
@@ -359,12 +359,39 @@ static boot_reason_t platform_boot_status(void)
         return BR_WDT_BY_PASS_PWK;
     }
 #if !CFG_FPGA_PLATFORM
+#ifdef  LENOVO_BOOT_TIME_DELAY
+	/* check power key */
+	int iLoop=0;
+	int iCheck_num=3;
+	int iInterval=250;
+	int iRet=0;
+	
+	for(iLoop=0; iLoop < iCheck_num; iLoop++ )
+	{
+		iRet = mtk_detect_key(8);
+		if(false == iRet )
+			break;
+		mdelay(iInterval);
+	}
+	
+	if (iRet) 
+	{
+		print("%s Power key boot!\n", MOD);
+		rtc_mark_bypass_pwrkey();
+		return BR_POWER_KEY;
+	}
+	
+#else
+
     /* check power key */
     if (mtk_detect_key(8)) {
         print("%s Power key boot!\n", MOD);
         rtc_mark_bypass_pwrkey();
         return BR_POWER_KEY;
     }
+	
+#endif
+
 #endif
 
 #ifndef EVB_PLATFORM

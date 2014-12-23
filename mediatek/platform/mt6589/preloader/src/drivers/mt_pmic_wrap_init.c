@@ -766,8 +766,8 @@ S32 pwrap_init ( void )
   //TBD: Set SPI_CK freq = 66MHz
   //###############################
   //WRAP_WR32(CLK_CFG_8, 5);
-  rdata = WRAP_RD32(CLK_CFG_8);
-  WRAP_WR32(CLK_CFG_8, (rdata & ~0x7) | 0x5);
+  //rdata = WRAP_RD32(CLK_CFG_8);
+  //WRAP_WR32(CLK_CFG_8, (rdata & ~0x7) | 0x5);
 
   //###############################
   // SIDLY setting

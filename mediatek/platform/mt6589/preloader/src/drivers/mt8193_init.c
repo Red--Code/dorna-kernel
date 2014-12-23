@@ -242,9 +242,9 @@ int mt8193_init(void)
 	CKGEN_WRITE32(REG_RW_CKMISC_CTRL, u4Tmp);
 #endif
 	  
-    mt8193_pllgp_en();
+//mt8193_pllgp_en();
 
-    mt8193_vopll_en();
+//mt8193_vopll_en();
 
 	#if NFI_MLC
 	close_8193_NFI();

@@ -1760,8 +1760,15 @@ static void msdc_set_mclk(struct msdc_host *host, int ddr, u32 hz)
 
     if (!hz) { // set mmc system clock to 0 
         printk(KERN_ERR "msdc%d -> set mclk to 0",host->id);  // fix me: need to set to 0
-        if(is_card_sdio(host))
+        if(is_card_sdio(host)){
             host->saved_para.hz = hz;
+#ifdef SDIO_ERROR_BYPASS    
+            host->sdio_error = 0; 
+            memset(&host->sdio_error_rec.cmd, 0, sizeof(struct mmc_command));  
+            memset(&host->sdio_error_rec.data, 0, sizeof(struct mmc_data));
+            memset(&host->sdio_error_rec.stop, 0, sizeof(struct mmc_command));
+#endif
+        }
         host->mclk = 0;
         msdc_reset_hw(host->id);
         return;
@@ -2786,6 +2793,7 @@ static void msdc_pm(pm_message_t state, void *data)
 			msdc_pin_reset (host, MSDC_PIN_PULL_UP);
 			msdc_pin_config(host, MSDC_PIN_PULL_UP);
 			host->power_control(host,1);
+			mdelay(10);
 			msdc_restore_emmc_setting(host);
 		}
             (void)mmc_resume_host(host->mmc);
@@ -2797,7 +2805,12 @@ static void msdc_pm(pm_message_t state, void *data)
 
 end:
 #ifdef SDIO_ERROR_BYPASS    
-    host->sdio_error = 0;	
+    if(is_card_sdio(host)){
+        host->sdio_error = 0;	
+        memset(&host->sdio_error_rec.cmd, 0, sizeof(struct mmc_command));
+        memset(&host->sdio_error_rec.data, 0, sizeof(struct mmc_data));
+        memset(&host->sdio_error_rec.stop, 0, sizeof(struct mmc_command));
+    }
 #endif        
     // gate clock at the last step when suspend.
     if ((evt == PM_EVENT_SUSPEND) || (evt == PM_EVENT_USER_SUSPEND)) {
@@ -5348,11 +5361,13 @@ static void msdc_dump_trans_error(struct msdc_host   *host,
 	   		host->read_timeout_uhs104 = 0;
 	   }
 #ifdef SDIO_ERROR_BYPASS  		
-    if(is_card_sdio(host)&&(host->sdio_error!=-EIO)){
-        host->sdio_error = -EIO;   
-        host->sdio_error_mrq->cmd = cmd;
-        host->sdio_error_mrq->cmd->data = data;
-        host->sdio_error_mrq->cmd->data->stop = stop;
+    if(is_card_sdio(host)&&(host->sdio_error!=-EIO)&&(cmd->opcode==53)){
+       host->sdio_error = -EIO;  
+       memcpy(&(host->sdio_error_rec.cmd), cmd, sizeof(struct mmc_command));
+       if(data)
+           memcpy(&(host->sdio_error_rec.data), data, sizeof(struct mmc_data));
+       if(stop)
+           memcpy(&(host->sdio_error_rec.stop), stop, sizeof(struct mmc_command));
     }
 #endif    
 }
@@ -5395,16 +5410,22 @@ static void msdc_ops_request_legacy(struct mmc_host *mmc, struct mmc_request *mr
     }
 #ifdef SDIO_ERROR_BYPASS    
     if (mrq->cmd->opcode == 53 && host->sdio_error == -EIO){    // sdio error bypass
-        cmd = host->sdio_error_mrq->cmd;  
-        mrq->cmd = cmd;
-        if((sdio_error_count++)%SDIO_ERROR_OUT_INTERVAL == 0){          
-          data = host->sdio_error_mrq->cmd->data;
-          if (data) stop = data->stop;
-          msdc_dump_trans_error(host, cmd, data, stop); 
-        }
-        goto sdio_error_out;    
+        if((sdio_error_count++)%SDIO_ERROR_OUT_INTERVAL == 0){  
+            if(host->sdio_error_rec.cmd.opcode == 53){
+                spin_lock(&host->lock);
+                struct mmc_command err_cmd = host->sdio_error_rec.cmd;
+                struct mmc_data err_data = host->sdio_error_rec.data;
+                ERR_MSG("[BYPS]XXX CMD<%d><0x%x> Error<%d> Resp<0x%x>", err_cmd.opcode, err_cmd.arg, err_cmd.error, err_cmd.resp[0]); 
+                if(data->error)
+                    ERR_MSG("[BYPS]XXX DAT block<%d> Error<%d>", err_data.blocks, err_data.error);
+                spin_unlock(&host->lock);        
+                goto sdio_error_out;    
+                
+            }
+       }
     }
-#endif    
+#endif
+        
     /* start to process */
     spin_lock(&host->lock);  
 	host->power_cycle_enable = 1;
@@ -7276,6 +7297,9 @@ static int msdc_drv_probe(struct platform_device *pdev)
 	host->power_switch	= NULL;
 #ifdef SDIO_ERROR_BYPASS      
     host->sdio_error = 0;
+    memset(&host->sdio_error_rec.cmd, 0, sizeof(struct mmc_command));
+    memset(&host->sdio_error_rec.data, 0, sizeof(struct mmc_data));
+    memset(&host->sdio_error_rec.stop, 0, sizeof(struct mmc_command));
 #endif    
 	#ifndef FPGA_PLATFORM
 	if(host->id == 1)

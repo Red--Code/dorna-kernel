@@ -31,6 +31,11 @@
 //#define CONFIG_DEBUG_MSG
 #define GPT_TIMER // when sleep driver ready, open this define
 
+#ifdef MTK_KERNEL_POWER_OFF_CHARGING
+bool g_boot_reason_change = false;
+#endif
+static int g_soc_first_flag = 0;
+
 /*****************************************************************************
  *  Type define
  ****************************************************************************/
@@ -91,7 +96,7 @@ kal_bool temp_error_recovery_chr_flag =KAL_TRUE;
  *  BATTERY VOLTAGE
  ****************************************************************************/
 /*begin lenovo-sw xuwei9 2013-3-14,increase lowvol VOL for power on system stability*/
-#define BATTERY_LOWVOL_THRESOLD             3550 /* 3450*/
+#define BATTERY_LOWVOL_THRESOLD              3500
 /*end lenovo-sw xuwei9 2013-3-14,increase lowvol VOL for power on system stability*/
 #define CHR_OUT_CURRENT                     100
 
@@ -264,6 +269,57 @@ int get_i_sense_volt_ch0(int times)
     ret=pmic_config_interface(AUXADC_CON14, 0x1, PMIC_RG_SOURCE_CH0_NORM_SEL_MASK, PMIC_RG_SOURCE_CH0_NORM_SEL_SHIFT);	
     return PMIC_IMM_GetOneChannelValue(0,times,1); //i sense use channel 0 as well
 }
+
+#ifdef MTK_BATLOWV_NO_PANEL_ON_EARLY
+kal_bool is_low_battery(void)
+{
+#ifdef MTK_BQ27541_SUPPORT   
+    U32 returnData = 0;
+    int ret = 0;
+#endif
+    
+    kal_uint32 bq24196_chrg_status;
+    
+    BMT_status.bat_vol = get_i_sense_volt_ch0(5);
+
+    if (BMT_status.bat_vol < BATTERY_LOWVOL_THRESOLD)
+    {
+        printf("%s, TRUE\n", __FUNCTION__);
+        return KAL_TRUE;
+    }
+    else
+    {
+        //battery protect check for S3 platform        
+        if (BMT_status.bat_vol <= 3800)
+        {
+#ifdef MTK_BQ27541_SUPPORT
+            ret = bq27541_set_cmd_read(BQ27541_CMD_Voltage,&returnData);
+            if(ret == I2C_OK)
+            {                                
+                printf("battery voltage = %d\n", (INT32)returnData);
+                
+                if (BMT_status.bat_vol - (INT32)returnData >= 150)
+                {
+                    printf("%s, battery real voltage is %d, TRUE\n", __FUNCTION__, (INT32)returnData);
+                    return KAL_TRUE;
+                }
+        	}
+#endif     
+            bq24196_chrg_status = bq24196_get_chrg_stat();
+            printf("bq24196_chrg_status = %d\n", bq24196_chrg_status);
+            
+            if(bq24196_chrg_status == 0x1) //Pre-charge
+            {
+                printf("%s, battery protect TRUE\n", __FUNCTION__);
+                return KAL_TRUE;
+            }    
+        }    
+    }
+    
+    printf("%s, FALSE\n", __FUNCTION__);
+    return KAL_FALSE;
+}
+#endif
 
 /* convert register to temperature  */
 INT16 BattThermistorConverTemp(INT32 Res)
@@ -585,20 +641,28 @@ void select_charging_curret_bq24196(void)
     }
     else if (BMT_status.charger_type == NONSTANDARD_CHARGER)
     {
-        g_temp_CC_value = AC_CHARGER_CURRENT;
-        bq24196_set_iinlim(0x6); //IN current limit at 2A
+        g_temp_CC_value = USB_CHARGER_CURRENT;// AC_CHARGER_CURRENT;
+        bq24196_set_iinlim(0x2); //IN current limit at 2A->500mA
         bq24196_set_ac_current();
     }
     else if (BMT_status.charger_type == STANDARD_CHARGER)
     {
         g_temp_CC_value = AC_CHARGER_CURRENT;
+#ifdef  S6000L_ROW_COMMON
+        bq24196_set_iinlim(0x5); //IN current limit at 2A->1.5A
+#else
         bq24196_set_iinlim(0x6); //IN current limit at 2A
+#endif
         bq24196_set_ac_current();
     }
     else if (BMT_status.charger_type == CHARGING_HOST)
     {
         g_temp_CC_value = AC_CHARGER_CURRENT;
+#ifdef  S6000L_ROW_COMMON
+        bq24196_set_iinlim(0x5); //IN current limit at 2A->1.5A
+#else
         bq24196_set_iinlim(0x6); //IN current limit at 2A
+#endif
         bq24196_set_ac_current();
     }
     else
@@ -1179,6 +1243,7 @@ int BAT_CheckBatteryStatus_bq24196(void)
     }
 	else
 	{
+        g_soc_first_flag = 1;
         BMT_status.SOC = (INT32)returnData;
         printf("[BATTERY:bq27541] bq27541 read SOC raw data = %d\n", returnData);		    
 	}
@@ -1723,9 +1788,162 @@ void check_point_sync_leds(void)
     }
 }
 
+//enter this function when low battery with charger
+void check_bat_protect_status()
+{        
+#ifdef MTK_BQ27541_SUPPORT
+    U32 returnData = 0;
+    int ret = 0;
+    U32 external_bat_vol = 0;
+#endif
+    
+    printf("%s\n", __FUNCTION__);
+    
+    if ((BMT_status.charger_type != STANDARD_HOST) && (BMT_status.charger_type != CHARGER_UNKNOWN))
+    {
+        printf("no trap, keep booting!\n");
+        return;
+    }
+    
+#ifdef MTK_BQ27541_SUPPORT
+    // check battery protect condition    
+    ret = bq27541_set_cmd_read(BQ27541_CMD_Voltage, &returnData);
+    if(ret != I2C_OK)
+    {
+        printf("[BATTERY:ADC:bq27541] bq27541 i2c access error, use MT6320 measured battery voltage\n");
+        return;
+    }	
+    else
+    {
+        printf("[BATTERY:ADC:bq27541] battery voltage read raw data(%d)mV\n", returnData);
+        external_bat_vol = returnData;
+    }
+        
+    kick_charger_wdt();               
+    upmu_set_rg_vcdt_hv_en(1);      //VCDT_HV_EN
+
+    //add charger ov detection
+    bmt_charger_ov_check();
+    
+    //for debug
+    printf("external_bat_vol = %d, ISENSE = %d\n", external_bat_vol, BMT_status.bat_vol);
+    
+    while ((external_bat_vol < 3200) && (((int)BMT_status.bat_vol - (int)external_bat_vol) > 150))
+    {                
+        rtc_boot_check(false);
+        BAT_thread_bq24196();
+        printf("-");
+
+    #ifdef GPT_TIMER
+        mtk_sleep(5000, KAL_TRUE);
+    #else
+        tmo2 = get_timer(0);
+        while(get_timer(tmo2) <= 5000 /* ms */);
+    #endif
+    
+        //update voltage from 27541
+        ret = bq27541_set_cmd_read(BQ27541_CMD_Voltage, &returnData);
+        if(ret != I2C_OK)
+        {
+            printf("[BATTERY:ADC:bq27541] bq27541 i2c access error, use MT6320 measured battery voltage\n");
+            break;
+        }	
+        else
+        {
+            printf("[BATTERY:ADC:bq27541] battery voltage read raw data(%d)mV\n", returnData);
+            external_bat_vol = returnData;                    
+        }
+        
+        //update isense
+        bq24196_set_chg_config(0x0);    
+        BMT_status.bat_vol = get_i_sense_volt_ch0(5);
+        
+        //for debug
+        printf("external_bat_vol = %d, ISENSE = %d\n", external_bat_vol, BMT_status.bat_vol);
+    }
+#endif    
+}
+
 extern bool g_boot_menu;
 
+#ifdef MTK_KERNEL_POWER_OFF_CHARGING
 void mt65xx_bat_init(void)
+{            
+    BMT_status.bat_full = false;
+    //if usb cable ,charging stay in lk
+    CHR_Type_num = mt_charger_type_detection();
+    BMT_status.charger_type = CHR_Type_num;
+    if(CHR_Type_num == STANDARD_HOST/* && BMT_status.bat_vol < BATTERY_LOWVOL_THRESOLD*/ )
+    {
+        printf("[mt65xx_bat_init] david bq24196 init USB\n");
+        mt65xx_bat_init_usb();
+        return;
+    }
+
+    bq24196_set_chg_config(0x0);    
+    BMT_status.bat_vol = get_i_sense_volt_ch0(5);    
+    
+    printf("g_boot_mode = %d\n", g_boot_mode);
+    printf("check VBAT=%d mV with %d mV\n", BMT_status.bat_vol, BATTERY_LOWVOL_THRESOLD);
+
+    if ((upmu_is_chr_det() == KAL_TRUE))
+    {        
+        printf("[mt65xx_bat_init] bq24196 init\n");
+        pmic_init_for_bq24196();
+        bq24196_dump_register();
+        
+        CHR_Type_num = mt_charger_type_detection();
+        BMT_status.charger_type = CHR_Type_num;
+                
+		pchr_turn_on_charging_bq24196();
+    }
+	pmic_config_interface(INT_STATUS0,0x1,0x1,9);
+	if(g_boot_mode == KERNEL_POWER_OFF_CHARGING_BOOT && (upmu_get_pwrkey_deb()==0) ) {
+		printf("[mt65xx_bat_init] KPOC+PWRKEY=>change boot mode\n");
+		g_boot_reason_change = true;
+	}
+    if(upmu_is_chr_det() == KAL_TRUE)
+        check_point_sync_leds();
+
+    rtc_boot_check(false);
+
+    //debug
+    bq24196_dump_register();
+
+    if (BMT_status.bat_vol < BATTERY_LOWVOL_THRESOLD) {
+        if(g_boot_mode == KERNEL_POWER_OFF_CHARGING_BOOT && upmu_is_chr_det() == KAL_TRUE) {
+            printf("[%s] Kernel Low Battery Power Off Charging Mode\n", __func__);
+            g_boot_mode = LOW_POWER_OFF_CHARGING_BOOT;
+            check_bat_protect_status();
+            return;
+        }
+        else
+        {
+            if ((BMT_status.charger_type != STANDARD_HOST) || (BMT_status.charger_type != CHARGER_UNKNOWN))
+            {
+                printf("with power path, keep booting!");
+                return;
+            }
+            
+            printf("[BATTERY] battery voltage(%dmV) <= CLV ! Can not Boot Linux Kernel !! \n\r",BMT_status.bat_vol);
+#ifndef NO_POWER_OFF
+            mt6575_power_off();
+#endif			
+            while(1)
+            {
+                printf("If you see the log, please check with RTC power off API\n\r");
+            }
+        }
+    }
+    return;
+}
+#endif
+
+#ifdef MTK_KERNEL_POWER_OFF_CHARGING
+void mt65xx_bat_init_usb(void)
+#else
+void mt65xx_bat_init(void)
+#endif
 {
 #ifndef GPT_TIMER	
     long tmo;
@@ -1801,12 +2019,23 @@ void mt65xx_bat_init(void)
             bmt_charger_ov_check();
 			
             if (rtc_boot_check(true) || meta_mode_check() || (pwrkey_ready == true) 
-            	|| mtk_wdt_boot_check()==WDT_BY_PASS_PWK_REBOOT || g_boot_arg->boot_reason==BR_TOOL_BY_PASS_PWK || g_boot_menu==true || g_boot_mode == FASTBOOT)
+            	|| mtk_wdt_boot_check()==WDT_BY_PASS_PWK_REBOOT || g_boot_arg->boot_reason==BR_TOOL_BY_PASS_PWK || g_boot_menu==true || g_boot_mode == FASTBOOT || g_boot_mode == RECOVERY_BOOT)
             {
+/*lenovo-sw: xuwei9 SELINAL-439 begin, schedule poweron not work in usb mode*/
+#ifdef  MTK_KERNEL_POWER_OFF_CHARGING
+                 if((g_boot_mode == KERNEL_POWER_OFF_CHARGING_BOOT ) && !(meta_mode_check()||(pwrkey_ready == true)||mtk_wdt_boot_check()==WDT_BY_PASS_PWK_REBOOT || g_boot_arg->boot_reason==BR_TOOL_BY_PASS_PWK || g_boot_menu==true || g_boot_mode == FASTBOOT ) )
+                {
+                        g_boot_mode = NORMAL_BOOT ;
+                }
+#endif
+/*lenovo-sw: xuwei9 SELINAL-439 end*/
+
                 // Low Battery Safety Booting
+                printf("%d %d %d %d %d",g_boot_menu,g_boot_mode, g_boot_arg->boot_reason, mtk_wdt_boot_check(),pwrkey_ready);
                 BMT_status.bat_vol = get_i_sense_volt_ch0(1); //we do not turn off charging because of power path support, the battery voltage may under UVLO
                 printf("check VBAT during charging =%d mV with %d mV\n", BMT_status.bat_vol, BATTERY_LOWVOL_THRESOLD);
-                while ( BMT_status.bat_vol < BATTERY_LOWVOL_THRESOLD )
+				
+                while ( BMT_status.bat_vol < BATTERY_LOWVOL_THRESOLD||(BMT_status.SOC <= 2 && g_soc_first_flag == 1) )
                 {
                     if(BMT_status.charger_type != STANDARD_HOST)
                         break;
@@ -1820,7 +2049,7 @@ void mt65xx_bat_init(void)
                         printf("After mt6516_disp_show_low_battery\r\n");
                         mt_disp_wait_idle();
                         printf("After mt6516_disp_wait_idle\r\n");
-                        bl_switch = KAL_FALSE;
+                        bl_switch = KAL_FALSE;// set  key detect status 
                         bl_switch_timer = 0;
                         low_bat_boot_display = 1;
 
@@ -1842,9 +2071,39 @@ void mt65xx_bat_init(void)
                         while(get_timer(tmo2) <= 1000 /* ms */);
                     #endif
 
+			//add chenggh2,selinal-207,start
+			//detect key press
+			if ((mtk_detect_key(BACKLIGHT_KEY) || pmic_detect_powerkey() ) && (bl_switch == KAL_TRUE))//key detect , need max > 1 seceond 
+			{
+				bl_switch = KAL_FALSE;// set  key detect status 
+				printf("mt65xx_backlight_on\r\n");
+
+				mt_disp_power(TRUE);
+				mt_disp_show_low_battery();
+				mt65xx_leds_brightness_set(6, 20);
+				printf("Before mt6516_disp_show_low_battery\r\n");
+			}
+
+			if ( bl_switch == KAL_FALSE ) // update charging screen every 1s (200ms * 5)
+			{
+				printf("loop_count = %d\n", loop_count);
+				loop_count ++;
+				// 5s sencond to shutdown lcd & backlight
+				if((BMT_status.bat_vol < BATTERY_LOWVOL_THRESOLD) && ((BMT_status.total_charging_time < 2) || (BMT_status.charger_type == STANDARD_HOST)) && loop_count >= 5)// && (g_lk_anime_on != 1))
+				{
+					loop_count =0;
+					bl_switch = KAL_TRUE; //reset key detect status 
+					mt65xx_backlight_off();
+					mt_disp_power(FALSE);
+					printf("[BATTERY:bq24196] mt65xx_backlight_off due to (display == KAL_FALSE)\r\n");
+				}         
+			}  
+			//add chenggh2,selinal-207,end
+
                     if((pwrkey_ready ==true) & pmic_detect_powerkey()==0 )
                     {
                         back_to_charging_animation_flag = TRUE;
+			printf("back_to_charging_animation_flag=%d\r\n", back_to_charging_animation_flag);			
                         break;
                     }
                     else
@@ -1864,7 +2123,7 @@ void mt65xx_bat_init(void)
                     if (g_boot_mode != ALARM_BOOT)
                     {
                         mt_disp_show_boot_logo();
-                        
+
                         // update twice here to ensure the LCM is ready to show the
                         // boot logo before turn on backlight, OR user may glimpse
                         // at the previous battery charging screen
@@ -1887,12 +2146,12 @@ void mt65xx_bat_init(void)
                     mt65xx_backlight_on();
 
                     pchr_turn_on_charging_bq24196(); //turn on charging for powerpath
-                
+
                     sc_mod_exit();
                     return;
                 }
                 back_to_charging_animation_flag = false;
-                low_bat_boot_display = 0;                
+                low_bat_boot_display = 0; 
             }
             else
             {
@@ -1935,8 +2194,7 @@ void mt65xx_bat_init(void)
                 while(get_timer(tmo) <= 200 /* ms */);
             #endif
 
-            if (loop_count++ == 60) loop_count = 0;
-        			
+            if (loop_count++ == 60) loop_count = 0;	
             if (mtk_detect_key(BACKLIGHT_KEY) || (!pmic_detect_powerkey() && press_pwrkey_count > 0))
             {
                 bl_switch = KAL_FALSE;
@@ -1958,8 +2216,7 @@ void mt65xx_bat_init(void)
             if (press_pwrkey_count > POWER_ON_TIME) 
                 pwrkey_ready = true;
             else
-                pwrkey_ready = false;
-            				            				
+                pwrkey_ready = false;		            				
             if (((loop_count % 5) == 0) && bl_switch == false) // update charging screen every 1s (200ms * 5)
             {
                 if (Enable_BATDRV_LOG == 1)
@@ -2033,7 +2290,7 @@ void mt65xx_bat_init(void)
     sc_mod_exit();
     return;
 }
-
+//#endif
 #else
 
 #include <platform/mt_typedefs.h>

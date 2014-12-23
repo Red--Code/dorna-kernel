@@ -1203,6 +1203,13 @@ struct msdc_saved_para
 	u8							int_dat_latch_ck_sel;
 	u8							ckgen_msdc_dly_sel;
 };
+
+struct msdc_error_record{
+    struct mmc_command         cmd;
+    struct mmc_data            data;
+    struct mmc_command         stop;
+};
+
 struct msdc_host
 {
     struct msdc_hw              *hw;
@@ -1285,7 +1292,7 @@ struct msdc_host
 	bool						block_bad_card;	
 #ifdef SDIO_ERROR_BYPASS      
     int                         sdio_error;     /* sdio error can't recovery */
-    struct mmc_request          *sdio_error_mrq; 		/* sdio last error mrq */								   
+    struct msdc_error_record    sdio_error_rec; 		/* sdio last error mrq */								   
 #endif    
 	void	(*power_control)(struct msdc_host *host,u32 on);
 	void	(*power_switch)(struct msdc_host *host,u32 on);

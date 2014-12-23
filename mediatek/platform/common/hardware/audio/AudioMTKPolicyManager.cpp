@@ -2696,7 +2696,7 @@ audio_devices_t AudioMTKPolicyManager::getDeviceForStrategy(routing_strategy str
         }
         if ((device2 == AUDIO_DEVICE_NONE) &&
                 mHasA2dp && (mForceUse[AudioSystem::FOR_MEDIA] != AudioSystem::FORCE_NO_BT_A2DP) &&
-                (getA2dpOutput() != 0) && !mA2dpSuspended) {
+                (getA2dpOutput() != 0) && !mA2dpSuspended && strategy != STRATEGY_ENFORCED_AUDIBLE) {
             device2 = mAvailableOutputDevices & AUDIO_DEVICE_OUT_BLUETOOTH_A2DP;
             if (device2 == AUDIO_DEVICE_NONE) {
                 device2 = mAvailableOutputDevices & AUDIO_DEVICE_OUT_BLUETOOTH_A2DP_HEADPHONES;

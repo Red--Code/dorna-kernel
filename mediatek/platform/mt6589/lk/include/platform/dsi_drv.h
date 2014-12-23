@@ -236,7 +236,7 @@ DSI_STATUS DSI_PowerOff(void);
 DSI_STATUS DSI_WaitForNotBusy(void);
 
 DSI_STATUS DSI_StartTransfer(BOOL needStartDSI);
-
+unsigned int DSI_Detect_CLK_Glitch(void);
 DSI_STATUS DSI_EnableClk(void);
 DSI_STATUS DSI_DisableClk(void);
 DSI_STATUS DSI_Reset(void);
@@ -261,6 +261,7 @@ DSI_STATUS DSI_TXRX_Control(BOOL cksm_en,
                                   BOOL null_packet_en,
                                   BOOL err_correction_en,
                                   BOOL dis_eotp_en,
+								  BOOL hstx_cklp_en,
                                   unsigned int  max_return_size);
 //#ifndef MT65XX_NEW_DISP
 #if 0
@@ -330,6 +331,10 @@ DSI_STATUS DSI_Reset_CLK(void);
 DSI_STATUS DSI_Get_Default_CLK(unsigned int *clk);
 DSI_STATUS DSI_Get_Current_CLK(unsigned int *clk);
 DSI_STATUS DSI_Change_CLK(unsigned int clk);
+
+void DSI_Set_VM_CMD(LCM_PARAMS *lcm_params);
+
+DSI_STATUS DSI_EnableVM_CMD(void);
 
 void DSI_WaitBtaTE(void);
 DSI_STATUS DSI_WaitVsync(void);

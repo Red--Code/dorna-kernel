@@ -258,7 +258,9 @@ typedef struct
 typedef struct
 {
 	unsigned DSI_START	: 1;
-	unsigned rsv_1		: 31;
+	unsigned rsv_1		: 15;
+	unsigned VM_CMD_START:1;
+	unsigned rsv_17		: 15;
 } DSI_START_REG, *PDSI_START_REG;
 
 
@@ -621,6 +623,20 @@ typedef struct
 
 typedef struct
 {
+	unsigned			VM_CMD_EN			:1;
+	unsigned			LONG_PKT			:1;
+	unsigned			TIME_SEL			:1;
+	unsigned			TS_VSA_EN			:1;
+	unsigned			TS_VBP_EN			:1;
+	unsigned			TS_VFP_EN			:1;
+	unsigned			rsv6				:2;
+	unsigned			CM_DATA_ID			:8;
+	unsigned			CM_DATA_0			:8;
+	unsigned			CM_DATA_1			:8;
+}DSI_VM_CMD_CON_REG, *PDSI_VM_CMD_CON_REG;
+
+typedef struct
+{
 	DSI_START_REG				DSI_START;				// 0000
 	DSI_STATUS_REG  			DSI_STA;					// 0004
 	DSI_INT_ENABLE_REG	DSI_INTEN;				// 0008
@@ -659,7 +675,10 @@ typedef struct
 	DSI_PHY_TIMCON1_REG	DSI_PHY_TIMECON1;	// 0114
 	DSI_PHY_TIMCON2_REG	DSI_PHY_TIMECON2;	// 0118
 	DSI_PHY_TIMCON3_REG	DSI_PHY_TIMECON3;	// 011C
-  UINT32   	        	rsv_0120[9];      // 0120..0140
+	UINT32   	        	rsv_0120[4];      // 0120..012c
+  	DSI_VM_CMD_CON_REG      DSI_VM_CMD_CON;		//0x130
+  	UINT32					rsv_0134[4];			//0x134...0x140
+
 	DSI_CKSM_OUT_REG		DSI_CKSM_OUT;			// 0144
 	DSI_STATE_DBG0_REG	DSI_STATE_DBG0;		// 0148
 	DSI_STATE_DBG1_REG	DSI_STATE_DBG1;		// 014C
@@ -685,6 +704,18 @@ typedef struct
 	DSI_CMDQ data[32];
 } DSI_CMDQ_REGS, *PDSI_CMDQ_REGS;
 
+typedef struct
+{
+	unsigned char byte0;
+	unsigned char byte1;
+	unsigned char byte2;
+	unsigned char byte3;
+} DSI_VM_CMDQ, *PDSI_VM_CMDQ;
+
+typedef struct
+{
+	DSI_VM_CMDQ data[4];
+} DSI_VM_CMDQ_REGS, *PDSI_VM_CMDQ_REGS;
 #ifndef BUILD_LK
 STATIC_ASSERT(0x002C == offsetof(DSI_REGS, DSI_VACT_NL));
 STATIC_ASSERT(0x0104 == offsetof(DSI_REGS, DSI_PHY_LCCON));

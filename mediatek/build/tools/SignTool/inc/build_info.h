@@ -1,2 +1,2 @@
 //building time information
-#define BUILD_TIME "2013年 04月 19日 星期五 16:43:42 CST"
+#define BUILD_TIME "Вт. окт. 21 21:10:30 YEKT 2014"

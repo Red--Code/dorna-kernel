@@ -428,7 +428,7 @@ void accdet_stop_pmic_audio_out(void)
     accdet_turn_off_speaker();
 
     //firstly shutdown receiver output
-
+    /*
     accdet_set_reg(0x706,0x0022,0xffffffff);
     accdet_set_reg(0x702,0x0880,0xffffffff);
     accdet_set_reg(0x70c,0x1552,0xffffffff);
@@ -437,24 +437,38 @@ void accdet_stop_pmic_audio_out(void)
     accdet_set_reg(0x706,0x0022,0xffffffff);
     accdet_set_reg(0x746,0x0001,0xffffffff);
     accdet_set_reg(0x71a,0x0000,0xffff6000);
-	
-    msleep(50);
+    */	
+    //msleep(5);
     //secondly shutdown speaker output
-    accdet_set_reg(0x600,0x0,0xffffffff);
-    accdet_set_reg(0x616,0x0,0xffffffff);
-    accdet_set_reg(0x700,0x0,0xffffffff);
-    accdet_set_reg(0x710,0x0,0xffffffff);
-    accdet_set_reg(0x70c,0x1552,0xffffffff);
+    //accdet_set_reg(0x600,0x0,0xffffffff);
+    //accdet_set_reg(0x616,0x0,0xffffffff);
+    //accdet_set_reg(0x700,0x0,0xffffffff);
+    //accdet_set_reg(0x710,0x0,0xffffffff);
+    //accdet_set_reg(0x70c,0x1552,0xffffffff);
     accdet_set_reg(0x704,0x0,0xffff0100);
     accdet_set_reg(0x746,0x1,0xffffffff);
-    accdet_set_reg(0x71a,0x0,0xffff6000);
+    //accdet_set_reg(0x71a,0x0,0xffff6000);
+    /*
+    accdet_set_reg(0x73c,0x0c0c,0xffffffff);
+    accdet_set_reg(0x702,0x0880,0xffff1fe0);
+    accdet_set_reg(0x702,0x0000,0xffff0007);
+    accdet_set_reg(0x70c,0x1552,0xffffffff);
+    accdet_set_reg(0x700,0x0,0xffffffff);
+    accdet_set_reg(0x712,0x0000,0xffff0001);
+    accdet_set_reg(0x704,0x0000,0xffff0100);
+    accdet_set_reg(0x718,0x0006,0xffffffff);
+    accdet_set_reg(0x746,0x0001,0xffffffff);
+    accdet_set_reg(0x71a,0x0000,0xffff6000);
+    accdet_set_reg(0x714,0x0192,0xffffffff);
+    */
+    
 }
 
 void accdet_restore_pmic_audio_out(void)
 {
-	int ret =0;
-
-	ret = pwrap_write(0x700, 0x9);
+    accdet_set_reg(0x746,0x0000,0xffffffff);
+    accdet_set_reg(0x704,0x0100,0xffff0100);
+    //accdet_set_reg(0x700,0x0,0xffffffff);
 }
 
 
@@ -483,6 +497,7 @@ void accdet_eint_work_callback(struct work_struct *work)
 		    accdet_FSA8049_enable();  //enable GPIO209 for PIN swap 
 		    ACCDET_DEBUG("[Accdet] FSA8049 enable!\n");
 		    msleep(60); //PIN swap need ms
+		    accdet_restore_pmic_audio_out();
 		}
 		else
 		{
@@ -717,12 +732,14 @@ static int key_check(int b)
 	if((b<DW_KEY_HIGH_THR)&&(b >= DW_KEY_THR)) 
 	{
 		ACCDET_DEBUG("adc_data: %d mv\n",b);
-		return DW_KEY;
+		//return DW_KEY;
+		return NO_KEY;
 	} 
 	else if ((b < DW_KEY_THR)&& (b >= UP_KEY_THR))
 	{
 		ACCDET_DEBUG("adc_data: %d mv\n",b);
-		return UP_KEY;
+		//return UP_KEY;
+		return NO_KEY;
 	}
 	else if ((b < UP_KEY_THR) && (b >= MD_KEY_THR))
 	{
